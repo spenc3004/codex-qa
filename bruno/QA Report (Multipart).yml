@@ -1,0 +1,25 @@
+info:
+  name: QA Report (Multipart)
+  type: http
+  seq: 3
+
+http:
+  method: POST
+  url: http://localhost:3000/qa
+  auth: inherit
+  body:
+    type: multipart-form
+    data:
+      - name: input_date
+        type: text
+        value: "2026-04-15"
+      - name: pdf
+        type: file
+        value:
+          - /absolute/path/to/your-file.pdf
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
