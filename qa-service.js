@@ -1,7 +1,10 @@
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import OpenAI, { toFile } from 'openai';
 import { Codex } from '@openai/codex-sdk';
 import {
     differenceInDays,
@@ -12,10 +15,8 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-const extractionPrompt = fs
-    .readFileSync(path.join(__dirname, 'prompts', 'extraction_prompt.txt'), 'utf8')
-    .trim();
+const execFileAsync = promisify(execFile);
+const OCR_ENGINE = 'ocrmypdf';
 
 const spellingPrompt = fs
     .readFileSync(path.join(__dirname, 'prompts', 'spelling_prompt.txt'), 'utf8')
@@ -70,43 +71,6 @@ const EXPIRATION_ITEM_SCHEMA_ANYOF = [
     },
 ];
 
-const EXTRACTION_SCHEMA = {
-    type: 'object',
-    additionalProperties: false,
-    required: ['found_expiration_dates', 'extracted_text', 'warnings'],
-    properties: {
-        found_expiration_dates: {
-            type: 'array',
-            items: {
-                anyOf: EXPIRATION_ITEM_SCHEMA_ANYOF,
-            },
-        },
-        extracted_text: {
-            type: 'object',
-            additionalProperties: false,
-            required: ['pages'],
-            properties: {
-                pages: {
-                    type: 'array',
-                    items: {
-                        type: 'object',
-                        additionalProperties: false,
-                        required: ['page', 'lines'],
-                        properties: {
-                            page: { type: 'integer', minimum: 1 },
-                            lines: { type: 'array', items: { type: 'string' } },
-                        },
-                    },
-                },
-            },
-        },
-        warnings: {
-            type: 'array',
-            items: { type: 'string' },
-        },
-    },
-};
-
 const EXPIRATION_SCHEMA = {
     type: 'object',
     additionalProperties: false,
@@ -152,9 +116,9 @@ const SPELLING_SCHEMA = {
     },
 };
 
-function ensureOpenAiKey() {
-    if (!process.env.OPENAI_API_KEY) {
-        throw new Error('Missing OPENAI_API_KEY.');
+function ensureCodexApiKey() {
+    if (!process.env.CODEX_API_KEY && !process.env.OPENAI_API_KEY) {
+        throw new Error('Missing CODEX_API_KEY or OPENAI_API_KEY.');
     }
 }
 
@@ -170,62 +134,129 @@ function parseJSONOrThrow(raw, contextLabel) {
     }
 }
 
-function extractResponsesOutputText(response) {
-    if (typeof response?.output_text === 'string' && response.output_text.trim()) {
-        return response.output_text;
+function parsePositiveInteger(rawValue, fallbackValue) {
+    const parsed = Number.parseInt(String(rawValue ?? ''), 10);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : fallbackValue;
+}
+
+function sanitizeTemporaryFilename(filename) {
+    const baseName = path.basename(filename || 'upload.pdf');
+    const sanitized = baseName.replace(/[^a-zA-Z0-9._-]/g, '_');
+    if (!sanitized) {
+        return 'upload.pdf';
     }
 
-    const outputItems = Array.isArray(response?.output) ? response.output : [];
-    for (const item of outputItems) {
-        const contentItems = Array.isArray(item?.content) ? item.content : [];
-        for (const content of contentItems) {
-            if ((content?.type === 'output_text' || content?.type === 'text') && typeof content?.text === 'string') {
-                return content.text;
+    if (sanitized.toLowerCase().endsWith('.pdf')) {
+        return sanitized;
+    }
+
+    return `${sanitized}.pdf`;
+}
+
+function buildOcrArguments(inputPath, sidecarPath) {
+    const args = [
+        '--quiet',
+        '--output-type',
+        'none',
+        '--sidecar',
+        sidecarPath,
+        '--mode',
+        'force',
+        '--rotate-pages',
+        '--deskew',
+        '--jobs',
+        String(parsePositiveInteger(process.env.OCR_JOBS, 1)),
+    ];
+
+    const languages = typeof process.env.OCR_LANGUAGES === 'string'
+        ? process.env.OCR_LANGUAGES.trim()
+        : '';
+
+    if (languages) {
+        args.push('--language', languages);
+    }
+
+    args.push(inputPath, '-');
+
+    return args;
+}
+
+function convertSidecarTextToPages(sidecarText) {
+    if (typeof sidecarText !== 'string' || !sidecarText.length) {
+        return [];
+    }
+
+    const normalized = sidecarText.replace(/\r\n?/g, '\n');
+    const rawPages = normalized.split('\f');
+
+    while (rawPages.length > 1 && rawPages.at(-1) === '') {
+        rawPages.pop();
+    }
+
+    return rawPages.map((pageText, index) => ({
+        page: index + 1,
+        lines: pageText
+            .split('\n')
+            .map((line) => line.trimEnd())
+            .filter((line) => line.trim().length > 0),
+    }));
+}
+
+export async function extractPdfTextLocally({
+    pdfBuffer,
+    filename = 'upload.pdf',
+}) {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'codex-test-ocr-'));
+    const inputPath = path.join(tempDir, sanitizeTemporaryFilename(filename));
+    const sidecarPath = path.join(tempDir, 'ocr-output.txt');
+    const timeoutMs = parsePositiveInteger(process.env.OCR_TIMEOUT_MS, 120000);
+
+    try {
+        await fsp.writeFile(inputPath, pdfBuffer);
+        await execFileAsync('ocrmypdf', buildOcrArguments(inputPath, sidecarPath), {
+            maxBuffer: 10 * 1024 * 1024,
+            timeout: timeoutMs,
+        });
+
+        const sidecarText = await fsp.readFile(sidecarPath, 'utf8').catch((error) => {
+            if (error?.code === 'ENOENT') {
+                return '';
             }
+
+            throw error;
+        });
+
+        const pages = convertSidecarTextToPages(sidecarText);
+        const warnings = [];
+
+        if (pages.length === 0) {
+            warnings.push('OCR produced no text.');
+        } else if (pages.every((page) => page.lines.length === 0)) {
+            warnings.push('OCR completed but no readable text was extracted.');
         }
+
+        return {
+            found_expiration_dates: [],
+            extracted_text: {
+                pages,
+            },
+            warnings,
+        };
+    } catch (error) {
+        if (error?.code === 'ENOENT') {
+            throw new Error('ocrmypdf is not installed or not available on PATH.');
+        }
+
+        const timeoutMessage = error?.killed
+            ? `Local OCR timed out after ${timeoutMs}ms.`
+            : '';
+        const stderr = typeof error?.stderr === 'string' ? error.stderr.trim() : '';
+        const detail = timeoutMessage || stderr || error?.message || String(error);
+
+        throw new Error(`Local OCR extraction failed: ${detail}`);
+    } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
     }
-
-    return '';
-}
-
-async function uploadPDFToOpenAI(openai, fileBuffer, originalName, mimeType) {
-    const file = await toFile(fileBuffer, originalName, {
-        type: mimeType || 'application/pdf',
-    });
-
-    const uploaded = await openai.files.create({
-        file,
-        purpose: 'user_data',
-    });
-
-    return uploaded.id;
-}
-
-async function runExtraction(openai, fileId) {
-    const extractionModel = process.env.EXTRACTION_MODEL || 'gpt-5.2';
-    const response = await openai.responses.create({
-        model: extractionModel,
-        input: [
-            {
-                role: 'user',
-                content: [
-                    { type: 'input_text', text: extractionPrompt },
-                    { type: 'input_file', file_id: fileId },
-                ],
-            },
-        ],
-        text: {
-            format: {
-                type: 'json_schema',
-                name: 'artwork_qa_report',
-                strict: true,
-                schema: EXTRACTION_SCHEMA,
-            },
-        },
-    });
-
-    const raw = extractResponsesOutputText(response);
-    return parseJSONOrThrow(raw, 'Extraction stage');
 }
 
 function createCodexThread() {
@@ -262,10 +293,10 @@ async function runCodexAnalysis(extractedTextPayload) {
 
     const spellingTurn = await thread.run(
         [
-        spellingPrompt,
-        '',
-        'Input JSON:',
-        JSON.stringify(extractedTextPayload),
+            spellingPrompt,
+            '',
+            'Input JSON:',
+            JSON.stringify(extractedTextPayload),
         ].join('\n'),
         {
             outputSchema: SPELLING_SCHEMA,
@@ -380,44 +411,32 @@ function validateDates(spelling, foundDates, inputDateISO) {
 export async function runQaReport({
     pdfBuffer,
     filename = 'upload.pdf',
-    mimeType = 'application/pdf',
     inputDateISO,
 }) {
-    ensureOpenAiKey();
+    ensureCodexApiKey();
 
-    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    let fileId = null;
+    const extracted = await extractPdfTextLocally({
+        pdfBuffer,
+        filename,
+    });
+    const extractedText = { pages: extracted?.extracted_text?.pages ?? [] };
 
-    try {
-        fileId = await uploadPDFToOpenAI(openai, pdfBuffer, filename, mimeType);
-        const extracted = await runExtraction(openai, fileId);
-        const extractedText = { pages: extracted?.extracted_text?.pages ?? [] };
+    const {
+        expiration: codexExpiration,
+        spelling,
+        threadId,
+    } = await runCodexAnalysis(extractedText);
+    const deterministic = validateDates(spelling, codexExpiration?.found_expiration_dates, inputDateISO);
 
-        const {
-            expiration: codexExpiration,
-            spelling,
-            threadId,
-        } = await runCodexAnalysis(extractedText);
-        const deterministic = validateDates(spelling, codexExpiration?.found_expiration_dates, inputDateISO);
-
-        return {
-            ok: deterministic.ok,
-            input_date: inputDateISO,
-            extraction_model: process.env.EXTRACTION_MODEL || 'gpt-5.2',
-            codex_model: process.env.CODEX_MODEL || null,
-            codex_thread_id: threadId,
-            extracted,
-            codex_expiration: codexExpiration,
-            spelling,
-            deterministic,
-        };
-    } finally {
-        if (fileId) {
-            try {
-                await openai.files.delete(fileId);
-            } catch (error) {
-                console.warn(`Failed to delete temporary file ${fileId}:`, error?.message ?? error);
-            }
-        }
-    }
+    return {
+        ok: deterministic.ok,
+        input_date: inputDateISO,
+        extraction_model: OCR_ENGINE,
+        codex_model: process.env.CODEX_MODEL || null,
+        codex_thread_id: threadId,
+        extracted,
+        codex_expiration: codexExpiration,
+        spelling,
+        deterministic,
+    };
 }

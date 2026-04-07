@@ -1,11 +1,11 @@
 # codex-test
 
-`codex-test` is a local Express service that accepts a PDF and an `input_date`, extracts artwork text, detects expiration dates and phrases, runs spelling QA, and returns a consolidated QA report.
+`codex-test` is a local Express service that accepts a PDF and an `input_date`, extracts artwork text with local OCR, detects expiration dates and phrases, runs spelling QA, and returns a consolidated QA report.
 
 ## What It Does
 
 - Accepts a PDF plus `input_date` in `YYYY-MM-DD` format.
-- Extracts page text from the PDF with the OpenAI Responses API.
+- Extracts page text from the PDF locally with `ocrmypdf`.
 - Uses the Codex SDK to:
   - detect expiration-related dates and phrases from the extracted text
   - run spelling QA on the extracted text
@@ -17,7 +17,9 @@
 ## Requirements
 
 - Node.js 18+
-- An OpenAI API key
+- `ocrmypdf` installed and available on `PATH`
+- Tesseract OCR and Ghostscript available on `PATH` via your `ocrmypdf` install
+- A Codex-compatible API key via `OPENAI_API_KEY` or `CODEX_API_KEY`
 
 ## Setup
 
@@ -34,12 +36,12 @@ Create or update `.env`:
 PORT=3000
 OPENAI_API_KEY=your-api-key-here
 # Optional:
-# EXTRACTION_MODEL=gpt-5.2
 # CODEX_API_KEY=your-api-key-here
 # CODEX_MODEL=gpt-5-codex
+# OCR_LANGUAGES=eng
+# OCR_JOBS=1
+# OCR_TIMEOUT_MS=120000
 ```
-
-You can use [.env.example](.env.example) as a template.
 
 ## Running The Service
 
@@ -200,6 +202,5 @@ The `POST /qa` response includes:
 - Project guidance: [AGENTS.md](AGENTS.md)
 - Bruno collection: [bruno/opencollection.yml](bruno/opencollection.yml)
 - Prompts:
-  - [prompts/extraction_prompt.txt](prompts/extraction_prompt.txt)
   - [prompts/expiration_prompt.txt](prompts/expiration_prompt.txt)
   - [prompts/spelling_prompt.txt](prompts/spelling_prompt.txt)

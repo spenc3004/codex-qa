@@ -37,20 +37,22 @@ Use one of:
 
 ## Pipeline behavior
 
-1. Upload PDF to OpenAI Files API (`purpose: user_data`).
-2. Run Responses API extraction with strict JSON schema (OCR + page text extraction).
-3. Pass extracted page text to Codex SDK for:
+1. Write the uploaded PDF to a temporary local file.
+2. Run `ocrmypdf` locally in force mode to OCR every page and emit sidecar text.
+3. Normalize OCR sidecar text into page-based `lines[]` payloads.
+4. Pass extracted page text to Codex SDK for:
    - expiration item detection (dates/phrases)
    - spelling report
-4. Run deterministic date checks in server code.
-5. Delete temporary OpenAI file.
+5. Run deterministic date checks in server code.
+6. Delete temporary local OCR files.
 
 ## Environment variables
 
-- `OPENAI_API_KEY` (required)
-- `EXTRACTION_MODEL` (optional, default: `gpt-5.2`)
+- `OPENAI_API_KEY` or `CODEX_API_KEY` (one required)
 - `CODEX_MODEL` (optional; if omitted Codex CLI default is used)
-- `CODEX_API_KEY` (optional; falls back to `OPENAI_API_KEY`)
+- `OCR_LANGUAGES` (optional; example: `eng` or `eng+spa`)
+- `OCR_JOBS` (optional; default: `1`)
+- `OCR_TIMEOUT_MS` (optional; default: `120000`)
 - `PORT` (optional, default: `3000`)
 
 ## Development
@@ -62,5 +64,6 @@ Use one of:
 ## Notes
 
 - Keep the deterministic date logic in server code; do not move it into model-only logic.
-- Keep schema contracts strict for both extraction and spelling stages.
-- Keep prompt files in `prompts/` as the editable source of model behavior.
+- Keep schema contracts strict for the expiration and spelling stages.
+- Keep runtime model behavior editable in `prompts/expiration_prompt.txt` and `prompts/spelling_prompt.txt`.
+- The OCR stage is local and does not use the OpenAI Files API or Responses API.
