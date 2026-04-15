@@ -102,7 +102,7 @@ Use this only when the server process can read that file path on the same machin
 
 ### 3. JSON Base64 Mode
 
-Send a JSON body with a base64-encoded PDF.
+Send a JSON body with a base64-encoded PDF. The `pdf_base64` value may be raw base64 or a data URL.
 
 ```json
 {
@@ -182,18 +182,49 @@ curl -X POST http://localhost:3000/qa \
 
 The `POST /qa` response includes:
 
-- `ok`
 - `input_date`
 - `request_source`
-- `extraction_model`
-- `codex_model`
 - `codex_thread_id`
-- `extracted`
-- `codex_expiration`
-- `spelling`
-- `deterministic`
+- `report`
 
-`deterministic` contains the final pass/fail logic and date validation details.
+`report` contains the final pass/fail logic and date validation details:
+
+- `pass`
+- `summary`
+- `expiration_details`
+- `spelling_details`
+
+`report.summary` contains:
+
+- `total_expiration_dates`
+- `no_dates_found`
+- `any_fail`
+- `spelling_issues_count`
+- `reasons`
+
+`report.summary.reasons` aggregates unique reasons from the expiration and spelling evaluation so callers do not need to inspect each item to understand the overall outcome.
+
+`report.expiration_details` contains one entry per expiration match returned by the expiration stage. Each entry includes the source fields from detection, plus deterministic validation fields such as:
+
+- `is_expiration_phrase`
+- `date_iso` for explicit dates
+- `page`
+- `raw_text`
+- `days_from_today`
+- `days_after_input`
+- `status`
+
+The `page` and `raw_text` fields are included to help locate the expiration item in the original PDF.
+
+`report.spelling_details` contains the spelling issues returned by the spelling stage, including fields such as:
+
+- `page`
+- `context_snippet`
+- `issue_text`
+- `suggestion`
+- `severity`
+
+The `page` and `context_snippet` fields are included to help locate the spelling issue in the original PDF.
 
 ## Implementation Notes
 

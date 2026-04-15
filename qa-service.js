@@ -31,20 +31,18 @@ const EXPIRATION_ITEM_SCHEMA_ANYOF = [
         type: 'object',
         additionalProperties: false,
         required: [
-            'expiration_phrase',
+            'is_expiration_phrase',
             'date_iso',
             'raw_text',
             'page',
-            'label',
             'assumptions',
             'confidence',
         ],
         properties: {
-            expiration_phrase: { type: 'boolean', enum: [false] },
+            is_expiration_phrase: { type: 'boolean', enum: [false] },
             date_iso: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
             raw_text: { type: 'string' },
             page: { type: 'integer', minimum: 1 },
-            label: { type: 'string' },
             assumptions: { type: 'string' },
             confidence: { type: 'number', minimum: 0, maximum: 1 },
         },
@@ -53,18 +51,16 @@ const EXPIRATION_ITEM_SCHEMA_ANYOF = [
         type: 'object',
         additionalProperties: false,
         required: [
-            'expiration_phrase',
+            'is_expiration_phrase',
             'raw_text',
             'page',
-            'label',
             'assumptions',
             'confidence',
         ],
         properties: {
-            expiration_phrase: { type: 'boolean', enum: [true] },
+            is_expiration_phrase: { type: 'boolean', enum: [true] },
             raw_text: { type: 'string' },
             page: { type: 'integer', minimum: 1 },
-            label: { type: 'string' },
             assumptions: { type: 'string' },
             confidence: { type: 'number', minimum: 0, maximum: 1 },
         },
@@ -313,100 +309,180 @@ async function runCodexAnalysis(extractedTextPayload) {
 function validateDates(spelling, foundDates, inputDateISO) {
     const inputDate = parseISO(inputDateISO);
     if (!isValid(inputDate)) {
-        return { ok: false, message: 'Invalid input date; expected YYYY-MM-DD format.' };
+        return buildInvalidInputDateResult();
     }
 
     const today = startOfDay(new Date());
+    const spellingContext = getSpellingContext(spelling);
+
+    const evaluations = (foundDates ?? []).map((item) =>
+        evaluateFoundDate(item, {
+            today,
+            inputDate,
+            inputDateISO,
+            spellingContext,
+        }),
+    );
+
+    return buildValidationReport({
+        evaluations,
+        spellingIssues: spellingContext.issues,
+        spellingIssuesMessage: spellingContext.message,
+    });
+}
+
+function buildInvalidInputDateResult() {
+    const message = 'Invalid input date; expected YYYY-MM-DD format.';
+
+    return {
+        pass: false,
+        summary: {
+            total_expiration_dates: 0,
+            no_dates_found: true,
+            any_fail: true,
+            spelling_issues_count: 0,
+            reasons: [message],
+        },
+        expiration_details: [],
+        spelling_details: [],
+    };
+}
+
+function getSpellingContext(spelling) {
     const spellingIssuesRaw = spelling?.spelling_issues ?? [];
-    const spellingIssues = Array.isArray(spellingIssuesRaw)
+    const issues = Array.isArray(spellingIssuesRaw)
         ? spellingIssuesRaw
         : [spellingIssuesRaw].filter(Boolean);
-    const hasSpellingIssues = spellingIssues.length > 0;
-    const spellingIssuesMessage = hasSpellingIssues
-        ? `Spelling issues detected: ${spellingIssues.map((issue) => issue?.issue_text ?? String(issue)).join('; ')}`
+
+    const message = issues.length > 0
+        ? `Spelling issues detected: ${issues.map((issue) => issue?.issue_text ?? String(issue)).join('; ')}`
         : '';
 
-    const checks = (foundDates ?? []).map((d) => {
-        if (d.expiration_phrase === true) {
-            const reasons = ['Explicit expiration phrase detected in text'];
-            let status = 'pass_expiration_phrase';
+    return {
+        issues,
+        hasIssues: issues.length > 0,
+        message,
+    };
+}
 
-            if (hasSpellingIssues) {
-                status = 'fail_spelling_issues';
-                reasons.push(spellingIssuesMessage);
-            }
+function evaluateFoundDate(item, context) {
+    if (item.is_expiration_phrase === true) {
+        return evaluateExpirationPhrase(item, context.spellingContext);
+    }
 
-            return {
-                ...d,
-                days_from_today: null,
-                days_after_input: null,
-                status,
-                reasons,
-            };
-        }
+    return evaluateExplicitDate(item, context);
+}
 
-        const exp = parseISO(d.date_iso);
-        const valid = isValid(exp);
-        const reasons = [];
+function evaluateExpirationPhrase(item, spellingContext) {
+    const reasons = ['Explicit expiration phrase detected in text'];
+    let status = 'pass_expiration_phrase';
 
-        if (!valid) {
-            let status = 'fail_invalid_date';
-            reasons.push('Invalid date format');
+    if (spellingContext.hasIssues) {
+        status = 'fail';
+        reasons.push(spellingContext.message);
+    }
 
-            if (hasSpellingIssues) {
-                status = 'fail_spelling_issues';
-                reasons.push(spellingIssuesMessage);
-            }
+    const expiration_details = {
+        ...item,
+        days_from_today: null,
+        days_after_input: null,
+        status,
+    };
 
-            return { ...d, status, details: 'Invalid date format', reasons };
-        }
+    return { expiration_details, reasons };
+}
 
-        const daysFromToday = differenceInDays(exp, today);
-        const daysAfterInput = differenceInDays(exp, inputDate);
+function evaluateExplicitDate(item, { today, inputDate, inputDateISO, spellingContext }) {
+    const dateIso = typeof item.date_iso === 'string' ? item.date_iso : '';
+    const exp = parseISO(dateIso);
+    const reasons = [];
 
-        const inFuture = daysFromToday > 0;
-        const atLeast4WeeksAfterInput = daysAfterInput >= 28;
+    if (!isValid(exp)) {
+        reasons.push('Invalid date format');
 
-        let status = 'pass';
-
-        if (!inFuture) {
-            status = 'fail_not_in_future';
-            reasons.push(`Expiration date is not in the future (days from today: ${daysFromToday})`);
-        }
-        if (!atLeast4WeeksAfterInput) {
-            status = 'fail_too_close_to_input';
-            reasons.push(`Expiration date is not at least 4 weeks after input date (${inputDateISO}) (days after input date: ${daysAfterInput})`);
-        }
-        if (hasSpellingIssues) {
-            status = 'fail_spelling_issues';
-            reasons.push(spellingIssuesMessage);
+        if (spellingContext.hasIssues) {
+            reasons.push(spellingContext.message);
         }
 
         return {
-            ...d,
+            expiration_details: {
+                ...item,
+                status: 'fail',
+                details: 'Invalid date format',
+            },
+            reasons,
+        };
+    }
+
+    const daysFromToday = differenceInDays(exp, today);
+    const daysAfterInput = differenceInDays(exp, inputDate);
+    let status = 'pass';
+
+    if (daysFromToday <= 0) {
+        status = 'fail';
+        reasons.push(`Expiration date is not in the future (days from today: ${daysFromToday})`);
+    }
+
+    if (daysAfterInput < 28) {
+        status = 'fail';
+        reasons.push(`Expiration date is not at least 4 weeks after input date (${inputDateISO}) (days after input date: ${daysAfterInput})`);
+    }
+
+    if (spellingContext.hasIssues) {
+        status = 'fail';
+        reasons.push(spellingContext.message);
+    }
+
+    return {
+        expiration_details: {
+            ...item,
             days_from_today: daysFromToday,
             days_after_input: daysAfterInput,
             status,
-            reasons,
-        };
-    });
+        },
+        reasons,
+    };
+}
 
-    const noDatesFound = checks.length === 0;
-    const anyFail = hasSpellingIssues || checks.some((c) => c.status !== 'pass' && c.status !== 'pass_expiration_phrase');
-    const ok = !anyFail;
+function buildValidationReport({ evaluations, spellingIssues, spellingIssuesMessage }) {
+    const expiration_details = evaluations
+        .map((evaluation) => evaluation.expiration_details)
+        .filter(Boolean);
+    const noDatesFound = expiration_details.length === 0;
+
+    const anyFail = spellingIssues.length > 0
+        || expiration_details.some((expiration) => expiration.status !== 'pass' && expiration.status !== 'pass_expiration_phrase');
+
+    const pass = !anyFail;
+    const status = anyFail
+        ? 'fail'
+        : expiration_details.some((expiration) => expiration.status === 'pass_expiration_phrase')
+            ? 'pass_expiration_phrase'
+            : 'pass';
+
+    const reasons = [
+        ...new Set(
+            [
+                ...(spellingIssues.length > 0 ? [spellingIssuesMessage] : []),
+                ...evaluations.flatMap((evaluation) => evaluation.reasons ?? []),
+            ].filter(Boolean),
+        ),
+    ];
 
     return {
-        ok,
+        pass,
         summary: {
-            total_expiration_dates: checks.length,
+            total_expiration_dates: expiration_details.length,
             no_dates_found: noDatesFound,
             any_fail: anyFail,
             spelling_issues_count: spellingIssues.length,
+            reasons,
         },
-        reasons: hasSpellingIssues ? [spellingIssuesMessage] : [],
-        checks,
+        expiration_details,
+        spelling_details: spellingIssues,
     };
 }
+
 
 export async function runQaReport({
     pdfBuffer,
@@ -426,17 +502,11 @@ export async function runQaReport({
         spelling,
         threadId,
     } = await runCodexAnalysis(extractedText);
-    const deterministic = validateDates(spelling, codexExpiration?.found_expiration_dates, inputDateISO);
+    const report = validateDates(spelling, codexExpiration?.found_expiration_dates, inputDateISO);
 
     return {
-        ok: deterministic.ok,
         input_date: inputDateISO,
-        extraction_model: OCR_ENGINE,
-        codex_model: process.env.CODEX_MODEL || null,
         codex_thread_id: threadId,
-        extracted,
-        codex_expiration: codexExpiration,
-        spelling,
-        deterministic,
+        report,
     };
 }
