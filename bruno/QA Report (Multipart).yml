@@ -13,6 +13,9 @@ http:
       - name: input_date
         type: text
         value: "2026-04-15"
+      - name: noTagline
+        type: text
+        value: "false"
       - name: pdf
         type: file
         value:

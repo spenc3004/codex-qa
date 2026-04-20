@@ -1,10 +1,10 @@
 # codex-qa
 
-`codex-qa` is a local Express service that accepts a PDF and an `input_date`, extracts artwork text with local OCR, detects expiration dates and phrases, runs spelling QA, and returns a consolidated QA report.
+`codex-qa` is a local Express service that accepts a PDF, an `input_date`, and a `noTagline` flag, extracts artwork text with local OCR, detects expiration dates and phrases, runs spelling QA, and returns a consolidated QA report.
 
 ## What It Does
 
-- Accepts a PDF plus `input_date` in `YYYY-MM-DD` format.
+- Accepts a PDF plus `input_date` in `YYYY-MM-DD` format and required `noTagline` boolean input.
 - Extracts page text from the PDF locally with `ocrmypdf`.
 - Uses the Codex SDK to:
   - detect expiration-related dates and phrases from the extracted text
@@ -12,6 +12,7 @@
 - Runs deterministic validation in server code:
   - expiration must be in the future
   - expiration must be at least 28 days after `input_date`
+  - Mail Shark tagline presence must match the `noTagline` flag
 - Returns a JSON QA report.
 
 ## Requirements
@@ -92,6 +93,7 @@ Send the actual PDF file in the request.
 Form fields:
 
 - `input_date`
+- `noTagline`
 - `pdf`
 
 Use this when the client should upload the file bytes directly.
@@ -103,6 +105,7 @@ Send a JSON body with a local file path.
 ```json
 {
   "input_date": "2026-04-15",
+  "noTagline": false,
   "pdf_path": "/absolute/path/to/file.pdf"
 }
 ```
@@ -116,6 +119,7 @@ Send a JSON body with a base64-encoded PDF. The `pdf_base64` value may be raw ba
 ```json
 {
   "input_date": "2026-04-15",
+  "noTagline": false,
   "filename": "sample.pdf",
   "mime_type": "application/pdf",
   "pdf_base64": "<base64 string>"
@@ -175,6 +179,7 @@ curl -X POST http://localhost:3000/qa \
   -H "Content-Type: application/json" \
   -d '{
     "input_date": "2026-04-15",
+    "noTagline": false,
     "pdf_path": "/absolute/path/to/file.pdf"
   }'
 ```
@@ -184,6 +189,7 @@ Multipart mode:
 ```bash
 curl -X POST http://localhost:3000/qa \
   -F "input_date=2026-04-15" \
+  -F "noTagline=false" \
   -F "pdf=@/absolute/path/to/file.pdf"
 ```
 
@@ -193,6 +199,7 @@ With API key protection enabled:
 curl -X POST http://localhost:3000/qa \
   -H "x-api-key: $SERVICE_API_KEY" \
   -F "input_date=2026-04-15" \
+  -F "noTagline=false" \
   -F "pdf=@/absolute/path/to/file.pdf"
 ```
 
@@ -281,14 +288,17 @@ Model and OCR:
 The `POST /qa` response includes:
 
 - `input_date`
+- `noTagline`
 - `request_source`
-- `codex_thread_id`
+- `codex_thread_ids`
+- `warnings`
 - `report`
 
 `report` contains the final pass/fail logic and date validation details:
 
 - `pass`
 - `summary`
+- `tagline_check`
 - `expiration_details`
 - `spelling_details`
 
@@ -300,7 +310,16 @@ The `POST /qa` response includes:
 - `spelling_issues_count`
 - `reasons`
 
-`report.summary.reasons` aggregates unique reasons from the expiration and spelling evaluation so callers do not need to inspect each item to understand the overall outcome.
+`report.summary.reasons` aggregates unique reasons from the expiration, spelling, and tagline evaluation so callers do not need to inspect each item to understand the overall outcome.
+
+`report.tagline_check` contains the deterministic Mail Shark tagline validation, including:
+
+- `status`
+- `no_tagline_requested`
+- `tagline_found`
+- `searched_text`
+- `matching_pages`
+- `reason`
 
 `report.expiration_details` contains one entry per expiration match returned by the expiration stage. Each entry includes the source fields from detection, plus deterministic validation fields such as:
 

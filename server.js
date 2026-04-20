@@ -209,6 +209,28 @@ function parseInputDateOrThrow(rawValue) {
     return value;
 }
 
+function parseNoTaglineOrThrow(rawValue) {
+    if (rawValue === true || rawValue === false) {
+        return rawValue;
+    }
+
+    if (typeof rawValue === 'string') {
+        const value = rawValue.trim().toLowerCase();
+
+        if (value === 'true') {
+            return true;
+        }
+
+        if (value === 'false') {
+            return false;
+        }
+    }
+
+    throw new HttpError(400, 'noTagline must be true or false.', {
+        code: 'INVALID_NO_TAGLINE',
+    });
+}
+
 function resolveAllowedPdfPath(pdfPath) {
     const fullPath = path.resolve(PDF_INPUT_ROOT, pdfPath);
     const relativePath = path.relative(PDF_INPUT_ROOT, fullPath);
@@ -239,6 +261,7 @@ function decodeBase64PdfOrThrow(rawValue) {
 
 async function handleQaRequest(req) {
     const inputDate = parseInputDateOrThrow(req.body?.input_date);
+    const noTagline = parseNoTaglineOrThrow(req.body?.noTagline);
     const pdfInput = await resolvePdfInput(req);
 
     if (!pdfInput?.buffer?.length) {
@@ -253,10 +276,12 @@ async function handleQaRequest(req) {
         pdfBuffer: pdfInput.buffer,
         filename: pdfInput.filename,
         inputDateISO: inputDate,
+        noTagline,
     });
 
     return {
         ...report,
+        noTagline,
         request_source: pdfInput.source,
     };
 }

@@ -17,6 +17,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const execFileAsync = promisify(execFile);
 const OCR_ENGINE = 'ocrmypdf';
+const MAIL_SHARK_TAGLINE = '©Mail Shark® www.GoMailShark.com 484-652-7990';
+const MAIL_SHARK_TAGLINE_OCR_WARNING = 'No text detected by OCR cannot confirm check for Mail Shark tagline presence';
 
 const spellingPrompt = fs
     .readFileSync(path.join(__dirname, 'prompts', 'spelling_prompt.txt'), 'utf8')
@@ -224,11 +226,14 @@ export async function extractPdfTextLocally({
 
         const pages = convertSidecarTextToPages(sidecarText);
         const warnings = [];
+        const hasReadableOcrText = pages.some((page) => page.lines.length > 0);
 
         if (pages.length === 0) {
             warnings.push('OCR produced no text.');
-        } else if (pages.every((page) => page.lines.length === 0)) {
+            warnings.push(MAIL_SHARK_TAGLINE_OCR_WARNING);
+        } else if (!hasReadableOcrText) {
             warnings.push('OCR completed but no readable text was extracted.');
+            warnings.push(MAIL_SHARK_TAGLINE_OCR_WARNING);
         }
 
         return {
@@ -236,6 +241,7 @@ export async function extractPdfTextLocally({
             extracted_text: {
                 pages,
             },
+            ocr_text: sidecarText,
             warnings,
         };
     } catch (error) {
@@ -310,10 +316,22 @@ async function runCodexAnalysis(extractedTextPayload) {
 }
 
 
-function validateDates(spelling, foundDates, inputDateISO) {
+function validateDates({
+    spelling,
+    foundDates,
+    inputDateISO,
+    noTagline,
+    ocrText,
+    pages,
+}) {
+    const taglineCheck = buildTaglineCheck({
+        noTagline,
+        ocrText,
+        pages,
+    });
     const inputDate = parseISO(inputDateISO);
     if (!isValid(inputDate)) {
-        return buildInvalidInputDateResult();
+        return buildInvalidInputDateResult(taglineCheck);
     }
 
     const today = startOfDay(new Date());
@@ -332,11 +350,16 @@ function validateDates(spelling, foundDates, inputDateISO) {
         evaluations,
         spellingIssues: spellingContext.issues,
         spellingIssuesMessage: spellingContext.message,
+        taglineCheck,
     });
 }
 
-function buildInvalidInputDateResult() {
+function buildInvalidInputDateResult(taglineCheck) {
     const message = 'Invalid input date; expected YYYY-MM-DD format.';
+    const reasons = [
+        message,
+        ...(taglineCheck?.reason ? [taglineCheck.reason] : []),
+    ];
 
     return {
         pass: false,
@@ -345,10 +368,42 @@ function buildInvalidInputDateResult() {
             no_dates_found: true,
             any_fail: true,
             spelling_issues_count: 0,
-            reasons: [message],
+            reasons,
         },
+        tagline_check: taglineCheck,
         expiration_details: [],
         spelling_details: [],
+    };
+}
+
+function buildTaglineCheck({ noTagline, ocrText, pages }) {
+    const matchingPages = Array.isArray(pages)
+        ? pages
+            .map((page) => {
+                const pageText = Array.isArray(page?.lines) ? page.lines.join('\n') : '';
+                return pageText.includes(MAIL_SHARK_TAGLINE) ? page?.page : null;
+            })
+            .filter((pageNumber) => Number.isInteger(pageNumber))
+        : [];
+
+    const taglineFound = typeof ocrText === 'string'
+        ? ocrText.includes(MAIL_SHARK_TAGLINE)
+        : matchingPages.length > 0;
+
+    let reason = null;
+    if (taglineFound && noTagline) {
+        reason = 'MS tagline is present, but client has indicated No Tagline';
+    } else if (!taglineFound && !noTagline) {
+        reason = 'MS tagling is not present, but client has not indicated No Tagline';
+    }
+
+    return {
+        status: reason ? 'fail' : 'pass',
+        no_tagline_requested: noTagline,
+        tagline_found: taglineFound,
+        searched_text: MAIL_SHARK_TAGLINE,
+        matching_pages: matchingPages,
+        reason,
     };
 }
 
@@ -448,26 +503,28 @@ function evaluateExplicitDate(item, { today, inputDate, inputDateISO, spellingCo
     };
 }
 
-function buildValidationReport({ evaluations, spellingIssues, spellingIssuesMessage }) {
+function buildValidationReport({
+    evaluations,
+    spellingIssues,
+    spellingIssuesMessage,
+    taglineCheck,
+}) {
     const expiration_details = evaluations
         .map((evaluation) => evaluation.expiration_details)
         .filter(Boolean);
     const noDatesFound = expiration_details.length === 0;
 
     const anyFail = spellingIssues.length > 0
+        || taglineCheck?.status === 'fail'
         || expiration_details.some((expiration) => expiration.status !== 'pass' && expiration.status !== 'pass_expiration_phrase');
 
     const pass = !anyFail;
-    const status = anyFail
-        ? 'fail'
-        : expiration_details.some((expiration) => expiration.status === 'pass_expiration_phrase')
-            ? 'pass_expiration_phrase'
-            : 'pass';
 
     const reasons = [
         ...new Set(
             [
                 ...(spellingIssues.length > 0 ? [spellingIssuesMessage] : []),
+                ...(taglineCheck?.reason ? [taglineCheck.reason] : []),
                 ...evaluations.flatMap((evaluation) => evaluation.reasons ?? []),
             ].filter(Boolean),
         ),
@@ -482,6 +539,7 @@ function buildValidationReport({ evaluations, spellingIssues, spellingIssuesMess
             spelling_issues_count: spellingIssues.length,
             reasons,
         },
+        tagline_check: taglineCheck,
         expiration_details,
         spelling_details: spellingIssues,
     };
@@ -491,8 +549,13 @@ export async function runQaReport({
     pdfBuffer,
     filename = 'upload.pdf',
     inputDateISO,
+    noTagline,
 }) {
     ensureCodexApiKey();
+
+    if (typeof noTagline !== 'boolean') {
+        throw new Error('noTagline must be provided as a boolean.');
+    }
 
     const extracted = await extractPdfTextLocally({
         pdfBuffer,
@@ -506,11 +569,14 @@ export async function runQaReport({
         threadIds,
     } = await runCodexAnalysis(extractedText);
 
-    const report = validateDates(
+    const report = validateDates({
         spelling,
-        codexExpiration?.found_expiration_dates,
+        foundDates: codexExpiration?.found_expiration_dates,
         inputDateISO,
-    );
+        noTagline,
+        ocrText: extracted?.ocr_text,
+        pages: extractedText.pages,
+    });
 
     return {
         input_date: inputDateISO,
@@ -523,4 +589,3 @@ export async function runQaReport({
         report,
     };
 }
-
