@@ -15,7 +15,6 @@ This service exposes a PDF QA API that checks expiration dates and spelling.
 ## Endpoints
 
 - `GET /` -> service info
-- `GET /health` -> health check
 - `POST /qa` -> run QA
 
 ## POST /qa input modes

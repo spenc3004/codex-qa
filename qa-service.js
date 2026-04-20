@@ -273,38 +273,42 @@ function createCodexThread() {
 }
 
 async function runCodexAnalysis(extractedTextPayload) {
-    const thread = createCodexThread();
+    const expirationThread = createCodexThread();
+    const spellingThread = createCodexThread();
 
-    const expirationTurn = await thread.run(
-        [
-            expirationPrompt,
-            '',
-            'Input JSON:',
-            JSON.stringify(extractedTextPayload),
-        ].join('\n'),
-        {
+    const expirationInput = [
+        expirationPrompt,
+        '',
+        'Input JSON:',
+        JSON.stringify(extractedTextPayload),
+    ].join('\n');
+
+    const spellingInput = [
+        spellingPrompt,
+        '',
+        'Input JSON:',
+        JSON.stringify(extractedTextPayload),
+    ].join('\n');
+
+    const [expirationTurn, spellingTurn] = await Promise.all([
+        expirationThread.run(expirationInput, {
             outputSchema: EXPIRATION_SCHEMA,
-        },
-    );
-
-    const spellingTurn = await thread.run(
-        [
-            spellingPrompt,
-            '',
-            'Input JSON:',
-            JSON.stringify(extractedTextPayload),
-        ].join('\n'),
-        {
+        }),
+        spellingThread.run(spellingInput, {
             outputSchema: SPELLING_SCHEMA,
-        },
-    );
+        }),
+    ]);
 
     return {
-        threadId: thread.id,
+        threadIds: {
+            expiration: expirationThread.id,
+            spelling: spellingThread.id,
+        },
         expiration: parseJSONOrThrow(expirationTurn.finalResponse, 'Codex expiration stage'),
         spelling: parseJSONOrThrow(spellingTurn.finalResponse, 'Codex spelling stage'),
     };
 }
+
 
 function validateDates(spelling, foundDates, inputDateISO) {
     const inputDate = parseISO(inputDateISO);
@@ -483,7 +487,6 @@ function buildValidationReport({ evaluations, spellingIssues, spellingIssuesMess
     };
 }
 
-
 export async function runQaReport({
     pdfBuffer,
     filename = 'upload.pdf',
@@ -500,13 +503,24 @@ export async function runQaReport({
     const {
         expiration: codexExpiration,
         spelling,
-        threadId,
+        threadIds,
     } = await runCodexAnalysis(extractedText);
-    const report = validateDates(spelling, codexExpiration?.found_expiration_dates, inputDateISO);
+
+    const report = validateDates(
+        spelling,
+        codexExpiration?.found_expiration_dates,
+        inputDateISO,
+    );
 
     return {
         input_date: inputDateISO,
-        codex_thread_id: threadId,
+        codex_thread_ids: threadIds,
+        warnings: [
+            ...(extracted?.warnings ?? []),
+            ...(codexExpiration?.warnings ?? []),
+            ...(spelling?.warnings ?? []),
+        ],
         report,
     };
 }
+

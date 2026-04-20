@@ -8,18 +8,18 @@ Task:
 - Include concrete expiration dates and phrase-only expirations.
 
 For date items:
-- expiration_phrase: false
+- is_expiration_phrase: false
 - date_iso: YYYY-MM-DD
 - raw_text: exact text snippet
 - page: 1-indexed page number
-- label: nearby keyword (EXP, Expires, Use by, Best by, Sell by, etc.)
 - assumptions: "Unambiguous" unless assumptions were required
 - confidence: 0..1
 
 For phrase-only items (no date present):
-- expiration_phrase: true
+- is_expiration_phrase: true
 - omit date_iso
-- raw_text, page, label, assumptions ("No date present"), confidence
+- raw_text, page, assumptions ("No date present"), confidence
+
 
 Rules:
 - Do not invent dates.
