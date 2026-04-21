@@ -236,6 +236,8 @@ export async function extractPdfTextLocally({
             warnings.push(MAIL_SHARK_TAGLINE_OCR_WARNING);
         }
 
+        console.log(pages);
+
         return {
             found_expiration_dates: [],
             extracted_text: {
