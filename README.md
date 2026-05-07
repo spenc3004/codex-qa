@@ -1,11 +1,11 @@
 # codex-qa
 
-`codex-qa` is a local Express service that accepts a PDF, an `input_date`, and a `noTagline` flag, extracts artwork text with local OCR, detects expiration dates and phrases, runs spelling QA, and returns a consolidated QA report.
+`codex-qa` is a local Express service that accepts a PDF, an `input_date`, and a `noTagline` flag, extracts native artwork text locally with `pdftotext`, detects expiration dates and phrases, runs spelling QA, and returns a consolidated QA report.
 
 ## What It Does
 
 - Accepts a PDF plus `input_date` in `YYYY-MM-DD` format and required `noTagline` boolean input.
-- Extracts page text from the PDF locally with `ocrmypdf`.
+- Extracts native page text from the PDF locally with `pdftotext`.
 - Uses the Codex SDK to:
   - detect expiration-related dates and phrases from the extracted text
   - run spelling QA on the extracted text
@@ -18,8 +18,7 @@
 ## Requirements
 
 - Node.js 18+
-- `ocrmypdf` installed and available on `PATH`
-- Tesseract OCR and Ghostscript available on `PATH` via your `ocrmypdf` install
+- `pdftotext` installed and available on `PATH`
 - A Codex-compatible API key via `OPENAI_API_KEY` or `CODEX_API_KEY`
 
 ## Setup
@@ -48,9 +47,7 @@ OPENAI_API_KEY=your-api-key-here
 # MAX_QA_CONCURRENCY=2
 # RATE_LIMIT_PER_MINUTE=10
 # JSON_BODY_LIMIT=15mb
-# OCR_LANGUAGES=eng
-# OCR_JOBS=1
-# OCR_TIMEOUT_MS=120000
+# PDFTOTEXT_TIMEOUT_MS=120000
 ```
 
 ## Running The Service
@@ -275,13 +272,11 @@ Security and request handling:
 - `RATE_LIMIT_PER_MINUTE`: per-IP request cap for `POST /qa`. Default: `10`.
 - `JSON_BODY_LIMIT`: Express JSON body size limit. Default: `15mb`.
 
-Model and OCR:
+Model and PDF text extraction:
 
 - `OPENAI_API_KEY` or `CODEX_API_KEY`: one is required.
 - `CODEX_MODEL`: optional model override for the Codex SDK call.
-- `OCR_LANGUAGES`: OCR language pack string such as `eng` or `eng+spa`.
-- `OCR_JOBS`: OCR worker count.
-- `OCR_TIMEOUT_MS`: timeout for the OCR stage in milliseconds.
+- `PDFTOTEXT_TIMEOUT_MS`: timeout for the local `pdftotext` stage in milliseconds.
 
 ## Response Shape
 

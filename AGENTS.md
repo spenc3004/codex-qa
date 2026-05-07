@@ -37,21 +37,19 @@ Use one of:
 ## Pipeline behavior
 
 1. Write the uploaded PDF to a temporary local file.
-2. Run `ocrmypdf` locally in force mode to OCR every page and emit sidecar text.
-3. Normalize OCR sidecar text into page-based `lines[]` payloads.
+2. Run `pdftotext` locally to extract native text from every page.
+3. Normalize extracted text into page-based `lines[]` payloads.
 4. Pass extracted page text to Codex SDK for:
    - expiration item detection (dates/phrases)
    - spelling report
 5. Run deterministic date checks in server code.
-6. Delete temporary local OCR files.
+6. Delete temporary local extraction files.
 
 ## Environment variables
 
 - `OPENAI_API_KEY` or `CODEX_API_KEY` (one required)
 - `CODEX_MODEL` (optional; if omitted Codex CLI default is used)
-- `OCR_LANGUAGES` (optional; example: `eng` or `eng+spa`)
-- `OCR_JOBS` (optional; default: `1`)
-- `OCR_TIMEOUT_MS` (optional; default: `120000`)
+- `PDFTOTEXT_TIMEOUT_MS` (optional; default: `120000`)
 - `PORT` (optional, default: `3000`)
 
 ## Development
@@ -65,4 +63,4 @@ Use one of:
 - Keep the deterministic date logic in server code; do not move it into model-only logic.
 - Keep schema contracts strict for the expiration and spelling stages.
 - Keep runtime model behavior editable in `prompts/expiration_prompt.txt` and `prompts/spelling_prompt.txt`.
-- The OCR stage is local and does not use the OpenAI Files API or Responses API.
+- The PDF text extraction stage is local and does not use the OpenAI Files API or Responses API.

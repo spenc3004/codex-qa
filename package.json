@@ -12,6 +12,7 @@
     "express-rate-limit": "^7.5.1",
     "helmet": "^8.1.0",
     "multer": "^2.0.2",
+    "node-poppler": "^9.1.2",
     "p-limit": "^6.2.0"
   },
   "devDependencies": {

@@ -16,9 +16,8 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const execFileAsync = promisify(execFile);
-const OCR_ENGINE = 'ocrmypdf';
 const MAIL_SHARK_TAGLINE = '©Mail Shark® www.GoMailShark.com 484-652-7990';
-const MAIL_SHARK_TAGLINE_OCR_WARNING = 'No text detected by OCR cannot confirm check for Mail Shark tagline presence';
+const MAIL_SHARK_TAGLINE_TEXT_WARNING = 'No text detected in PDF cannot confirm check for Mail Shark tagline presence';
 
 const spellingPrompt = fs
     .readFileSync(path.join(__dirname, 'prompts', 'spelling_prompt.txt'), 'utf8')
@@ -151,39 +150,20 @@ function sanitizeTemporaryFilename(filename) {
     return `${sanitized}.pdf`;
 }
 
-function buildOcrArguments(inputPath, sidecarPath) {
-    const args = [
-        '--quiet',
-        '--output-type',
-        'none',
-        '--sidecar',
-        sidecarPath,
-        '--force-ocr',
-        '--rotate-pages',
-        '--deskew',
-        '--jobs',
-        String(parsePositiveInteger(process.env.OCR_JOBS, 1)),
+function buildPdfToTextArguments(inputPath) {
+    return [
+        '-layout',
+        inputPath,
+        '-',
     ];
-
-    const languages = typeof process.env.OCR_LANGUAGES === 'string'
-        ? process.env.OCR_LANGUAGES.trim()
-        : '';
-
-    if (languages) {
-        args.push('--language', languages);
-    }
-
-    args.push(inputPath, '-');
-
-    return args;
 }
 
-function convertSidecarTextToPages(sidecarText) {
-    if (typeof sidecarText !== 'string' || !sidecarText.length) {
+function convertExtractedTextToPages(extractedText) {
+    if (typeof extractedText !== 'string' || !extractedText.length) {
         return [];
     }
 
-    const normalized = sidecarText.replace(/\r\n?/g, '\n');
+    const normalized = extractedText.replace(/\r\n?/g, '\n');
     const rawPages = normalized.split('\f');
 
     while (rawPages.length > 1 && rawPages.at(-1) === '') {
@@ -203,60 +183,53 @@ export async function extractPdfTextLocally({
     pdfBuffer,
     filename = 'upload.pdf',
 }) {
-    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'codex-test-ocr-'));
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'codex-test-pdftext-'));
     const inputPath = path.join(tempDir, sanitizeTemporaryFilename(filename));
-    const sidecarPath = path.join(tempDir, 'ocr-output.txt');
-    const timeoutMs = parsePositiveInteger(process.env.OCR_TIMEOUT_MS, 120000);
+    const timeoutMs = parsePositiveInteger(process.env.PDFTOTEXT_TIMEOUT_MS, 120000);
 
     try {
         await fsp.writeFile(inputPath, pdfBuffer);
-        await execFileAsync('ocrmypdf', buildOcrArguments(inputPath, sidecarPath), {
+        const { stdout } = await execFileAsync('pdftotext', buildPdfToTextArguments(inputPath), {
+            encoding: 'utf8',
             maxBuffer: 10 * 1024 * 1024,
             timeout: timeoutMs,
         });
 
-        const sidecarText = await fsp.readFile(sidecarPath, 'utf8').catch((error) => {
-            if (error?.code === 'ENOENT') {
-                return '';
-            }
-
-            throw error;
-        });
-
-        const pages = convertSidecarTextToPages(sidecarText);
+        const rawText = typeof stdout === 'string' ? stdout : '';
+        const pages = convertExtractedTextToPages(rawText);
         const warnings = [];
-        const hasReadableOcrText = pages.some((page) => page.lines.length > 0);
-
-        if (pages.length === 0) {
-            warnings.push('OCR produced no text.');
-            warnings.push(MAIL_SHARK_TAGLINE_OCR_WARNING);
-        } else if (!hasReadableOcrText) {
-            warnings.push('OCR completed but no readable text was extracted.');
-            warnings.push(MAIL_SHARK_TAGLINE_OCR_WARNING);
-        }
+        const hasReadableText = pages.some((page) => page.lines.length > 0);
 
         console.log(pages);
+
+        if (pages.length === 0) {
+            warnings.push('PDF text extraction produced no text.');
+            warnings.push(MAIL_SHARK_TAGLINE_TEXT_WARNING);
+        } else if (!hasReadableText) {
+            warnings.push('PDF text extraction completed but no readable text was extracted.');
+            warnings.push(MAIL_SHARK_TAGLINE_TEXT_WARNING);
+        }
 
         return {
             found_expiration_dates: [],
             extracted_text: {
                 pages,
             },
-            ocr_text: sidecarText,
+            raw_text: rawText,
             warnings,
         };
     } catch (error) {
         if (error?.code === 'ENOENT') {
-            throw new Error('ocrmypdf is not installed or not available on PATH.');
+            throw new Error('pdftotext is not installed or not available on PATH.');
         }
 
         const timeoutMessage = error?.killed
-            ? `Local OCR timed out after ${timeoutMs}ms.`
+            ? `Local PDF text extraction timed out after ${timeoutMs}ms.`
             : '';
         const stderr = typeof error?.stderr === 'string' ? error.stderr.trim() : '';
         const detail = timeoutMessage || stderr || error?.message || String(error);
 
-        throw new Error(`Local OCR extraction failed: ${detail}`);
+        throw new Error(`Local PDF text extraction failed: ${detail}`);
     } finally {
         await fsp.rm(tempDir, { recursive: true, force: true });
     }
@@ -322,12 +295,12 @@ function validateDates({
     foundDates,
     inputDateISO,
     noTagline,
-    ocrText,
+    rawText,
     pages,
 }) {
     const taglineCheck = buildTaglineCheck({
         noTagline,
-        ocrText,
+        rawText,
         pages,
     });
     const inputDate = parseISO(inputDateISO);
@@ -377,7 +350,7 @@ function buildInvalidInputDateResult(taglineCheck) {
     };
 }
 
-function buildTaglineCheck({ noTagline, ocrText, pages }) {
+function buildTaglineCheck({ noTagline, rawText, pages }) {
     const matchingPages = Array.isArray(pages)
         ? pages
             .map((page) => {
@@ -387,8 +360,8 @@ function buildTaglineCheck({ noTagline, ocrText, pages }) {
             .filter((pageNumber) => Number.isInteger(pageNumber))
         : [];
 
-    const taglineFound = typeof ocrText === 'string'
-        ? ocrText.includes(MAIL_SHARK_TAGLINE)
+    const taglineFound = typeof rawText === 'string'
+        ? rawText.includes(MAIL_SHARK_TAGLINE)
         : matchingPages.length > 0;
 
     let reason = null;
@@ -575,7 +548,7 @@ export async function runQaReport({
         foundDates: codexExpiration?.found_expiration_dates,
         inputDateISO,
         noTagline,
-        ocrText: extracted?.ocr_text,
+        rawText: extracted?.raw_text,
         pages: extractedText.pages,
     });
 
