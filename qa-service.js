@@ -152,7 +152,7 @@ function sanitizeTemporaryFilename(filename) {
 
 function buildPdfToTextArguments(inputPath) {
     return [
-        '-layout',
+        '-raw',
         inputPath,
         '-',
     ];
